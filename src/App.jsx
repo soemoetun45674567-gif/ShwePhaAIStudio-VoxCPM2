@@ -1,0 +1,1723 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { 
+  Play, Pause, Download, Clock, Mic, Trash2, 
+  Copy, Check, Activity, Loader2, Volume2, 
+  BookOpen, FileText, Send, Sparkles, Gauge, Info,
+  Subtitles, CheckCircle2, Music, X, SkipForward, SkipBack,
+  GripVertical, Cloud, Smartphone, Timer,
+  XCircle, Settings2, KeyRound, RefreshCw, UserRound, ExternalLink
+} from 'lucide-react';
+
+// --- FIREBASE IMPORTS (React Standard) ---
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, doc, setDoc, deleteDoc } from 'firebase/firestore';
+
+// --- SAFE FIREBASE INITIALIZATION ---
+let app, auth, db, appId = 'default-app-id';
+try {
+  if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+    const firebaseConfig = JSON.parse(__firebase_config);
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+  }
+} catch (e) {
+  console.error("Firebase Init Error:", e);
+}
+
+// --- LOCAL STORAGE (INDEXED DB) FOR HEAVY AUDIO PAYLOADS ---
+const initLocalAudioDB = () => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('PwaGyiHeavyAudioDB', 1);
+    request.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains('audios')) {
+        db.createObjectStore('audios', { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+};
+
+const saveToLocalDB = async (item) => {
+  const db = await initLocalAudioDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('audios', 'readwrite');
+    tx.objectStore('audios').put(item);
+    tx.oncomplete = () => resolve(true);
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const getLocalAudio = async (id) => {
+  const db = await initLocalAudioDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction('audios', 'readonly');
+    const request = tx.objectStore('audios').get(id);
+    request.onsuccess = () => resolve(request.result?.audioBase64 || null);
+  });
+};
+
+const deleteFromLocalDB = async (id) => {
+  const db = await initLocalAudioDB();
+  return new Promise((resolve) => {
+    const tx = db.transaction('audios', 'readwrite');
+    tx.objectStore('audios').delete(id);
+    tx.oncomplete = () => resolve(true);
+  });
+};
+
+// --- CONSTANTS ---
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY || ""; // Optional legacy fallback
+const THREE_DAYS_MS = 3 * 24 * 60 * 60 * 1000; // 3 Days in Milliseconds
+
+const VOICES = [
+  { id: 'Charon', name: 'အောင်အောင်', enName: 'Aung Aung', gender: 'Male', mmGender: 'ကျား', desc: 'သြဇာပါသော', enDesc: 'Authoritative' },
+  { id: 'Fenrir', name: 'ရဲရင့်', enName: 'Ye Yint', gender: 'Male', mmGender: 'ကျား', desc: 'ခွန်အားပါသော', enDesc: 'Strong' },
+  { id: 'Orus', name: 'မင်းခန့်', enName: 'Min Khant', gender: 'Male', mmGender: 'ကျား', desc: 'တည်ငြိမ်သော', enDesc: 'Calm' },
+  { id: 'Enceladus', name: 'ဇေယျာ', enName: 'Zayar', gender: 'Male', mmGender: 'ကျား', desc: 'ရင့်ကျက်သော', enDesc: 'Mature' },
+  { id: 'Iapetus', name: 'ထက်မြတ်', enName: 'Htet Myat', gender: 'Male', mmGender: 'ကျား', desc: 'ယုံကြည်မှုရှိသော', enDesc: 'Confident' },
+  { id: 'Algenib', name: 'မျိုးမင်း', enName: 'Myo Min', gender: 'Male', mmGender: 'ကျား', desc: 'ကြည်လင်သော', enDesc: 'Clear' },
+  { id: 'Rasalgethi', name: 'စည်သူ', enName: 'Sithu', gender: 'Male', mmGender: 'ကျား', desc: 'နွေးထွေးသော', enDesc: 'Warm' },
+  { id: 'Schedar', name: 'ကောင်းကင်', enName: 'Kaung Kin', gender: 'Male', mmGender: 'ကျား', desc: 'အားတက်ဖွယ်ရာ', enDesc: 'Energetic' },
+  { id: 'Alnilam', name: 'သီဟ', enName: 'Thiha', gender: 'Male', mmGender: 'ကျား', desc: 'ရှင်းလင်းပြတ်သားသော', enDesc: 'Crisp' },
+  { id: 'Sadachbia', name: 'ဝေယံ', enName: 'Wai Yan', gender: 'Male', mmGender: 'ကျား', desc: 'ဖော်ရွေသော', enDesc: 'Friendly' },
+  { id: 'Kore', name: 'စုစု', enName: 'Su Su', gender: 'Female', mmGender: 'မ', desc: 'ချိုသာသော', enDesc: 'Sweet' },
+  { id: 'Aoede', name: 'သန္တာ', enName: 'Thandar', gender: 'Female', mmGender: 'မ', desc: 'နူးညံ့သော', enDesc: 'Gentle' },
+  { id: 'Leda', name: 'လှိုင်', enName: 'Hlaing', gender: 'Female', mmGender: 'မ', desc: 'တောက်ပသော', enDesc: 'Bright' },
+  { id: 'Callirrhoe', name: 'အေးအေး', enName: 'Aye Aye', gender: 'Female', mmGender: 'မ', desc: 'အေးချမ်းသော', enDesc: 'Peaceful' },
+  { id: 'Autonoe', name: 'မြမြ', enName: 'Mya Mya', gender: 'Female', mmGender: 'မ', desc: 'ရှင်းလင်းသော', enDesc: 'Clear' },
+  { id: 'Despina', name: 'နန်းဆု', enName: 'Nan Su', gender: 'Female', mmGender: 'မ', desc: 'ချစ်စရာကောင်းသော', enDesc: 'Cute' },
+  { id: 'Erinome', name: 'ရွှေရည်', enName: 'Shwe Yae', gender: 'Female', mmGender: 'မ', desc: 'ဖော်ရွေသော', enDesc: 'Friendly' },
+  { id: 'Laomedeia', name: 'သီရိ', enName: 'Thiri', gender: 'Female', mmGender: 'မ', desc: 'တည်ငြိမ်သော', enDesc: 'Calm' },
+  { id: 'Achernar', name: 'မေမီ', enName: 'May Mi', gender: 'Female', mmGender: 'မ', desc: 'ကြည်လင်ပြတ်သားသော', enDesc: 'Crisp' },
+  { id: 'Gacrux', name: 'နှင်းနှင်း', enName: 'Hnin Hnin', gender: 'Female', mmGender: 'မ', desc: 'လန်းဆန်းသော', enDesc: 'Fresh' },
+];
+
+const EMOTIONS = [
+  { id: 'Neutral', label: 'ပုံမှန်', enLabel: 'Neutral', emoji: '😐' },
+  { id: 'Happy', label: 'ပျော်ရွှင်သော', enLabel: 'Happy', emoji: '😊' },
+  { id: 'Sad', label: 'ဝမ်းနည်းသော', enLabel: 'Sad', emoji: '😢' },
+  { id: 'Angry', label: 'ဒေါသထွက်သော', enLabel: 'Angry', emoji: '😠' },
+  { id: 'Calm', label: 'တည်ငြိမ်သော', enLabel: 'Calm', emoji: '😌' },
+  { id: 'Energetic', label: 'တက်ကြွသော', enLabel: 'Energetic', emoji: '⚡' },
+  { id: 'Whisper', label: 'တိုးတိုးပြော', enLabel: 'Whispering', emoji: '🤫' },
+  { id: 'Storytelling', label: 'ပုံပြင်ပြော', enLabel: 'Storytelling', emoji: '📖' },
+  { id: 'Professional', label: 'လုပ်ငန်းသုံး', enLabel: 'Professional', emoji: '👔' },
+  { id: 'Casual', label: 'ပေါ့ပေါ့ပါးပါး', enLabel: 'Casual', emoji: '☕' },
+  { id: 'Fearful', label: 'ကြောက်ရွံ့သော', enLabel: 'Fearful', emoji: '😨' },
+  { id: 'Surprised', label: 'အံ့သြသော', enLabel: 'Surprised', emoji: '😲' },
+  { id: 'Excited', label: 'စိတ်လှုပ်ရှားသော', enLabel: 'Excited', emoji: '🤩' },
+  { id: 'Romantic', label: 'ချစ်စရာကောင်းသော', enLabel: 'Romantic', emoji: '🥰' },
+  { id: 'Sarcastic', label: 'ခနဲ့တဲ့တဲ့', enLabel: 'Sarcastic', emoji: '😏' },
+  { id: 'Serious', label: 'လေးနက်သော', enLabel: 'Serious', emoji: '🧐' },
+  { id: 'Confident', label: 'ယုံကြည်မှုရှိသော', enLabel: 'Confident', emoji: '😎' },
+  { id: 'Shy', label: 'ရှက်တတ်သော', enLabel: 'Shy', emoji: '😳' },
+  { id: 'Hopeful', label: 'မျှော်လင့်ချက်ရှိသော', enLabel: 'Hopeful', emoji: '🤞' },
+  { id: 'Tired', label: 'ပင်ပန်းနေသော', enLabel: 'Tired', emoji: '😫' }
+];
+
+const SPEEDS = [
+  { id: 'slow', label: 'အနှေး', enLabel: 'Slow', prompt: 'slow', emoji: '🐌' },
+  { id: 'normal', label: 'ပုံမှန်', enLabel: 'Normal', prompt: 'normal', emoji: '▶️' },
+  { id: 'fast', label: 'အမြန်', enLabel: 'Fast', prompt: 'fast', emoji: '⚡' }
+];
+
+const defaultSingleMm = "မင်္ဂလာပါ၊ Pwa Gyi AI Studio မှ ကြိုဆိုပါတယ်။";
+const defaultSingleEn = "Hello, welcome to PWA GYI AI Studio.";
+
+// --- UTILITIES ---
+const classNames = (...classes) => classes.filter(Boolean).join(' ');
+
+const wavBase64ToPcm = (base64) => {
+  const bytes = base64ToUint8Array(base64);
+  if (bytes.length < 44) throw new Error('Invalid WAV data');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 12;
+  let dataStart = -1;
+  let dataSize = 0;
+  while (offset + 8 <= bytes.length) {
+    const id = String.fromCharCode(bytes[offset], bytes[offset + 1], bytes[offset + 2], bytes[offset + 3]);
+    const size = view.getUint32(offset + 4, true);
+    if (id === 'data') { dataStart = offset + 8; dataSize = size; break; }
+    offset += 8 + size + (size % 2);
+  }
+  if (dataStart < 0) throw new Error('WAV data chunk not found');
+  return bytes.slice(dataStart, Math.min(dataStart + dataSize, bytes.length));
+};
+
+const base64ToUint8Array = (base64) => {
+  const binaryString = window.atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+};
+
+const createWavBlob = (pcmDataArrays, sampleRate = 24000) => {
+  const totalPcmLength = pcmDataArrays.reduce((acc, arr) => acc + arr.length, 0);
+  if (totalPcmLength === 0) throw new Error("အသံဖိုင်ဒေတာ အလွတ်ဖြစ်နေပါသည်။");
+
+  const wavBuffer = new Uint8Array(44 + totalPcmLength);
+  const view = new DataView(wavBuffer.buffer);
+
+  const writeString = (offset, string) => {
+    for (let i = 0; i < string.length; i++) view.setUint8(offset + i, string.charCodeAt(i));
+  };
+
+  writeString(0, 'RIFF');
+  view.setUint32(4, 36 + totalPcmLength, true);
+  writeString(8, 'WAVE');
+  writeString(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeString(36, 'data');
+  view.setUint32(40, totalPcmLength, true);
+
+  let offset = 44;
+  for (const pcmArray of pcmDataArrays) {
+    wavBuffer.set(pcmArray, offset);
+    offset += pcmArray.length;
+  }
+  return new Blob([wavBuffer], { type: 'audio/wav' });
+};
+
+const blobToBase64 = (blob) => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+};
+
+const formatSrtTime = (seconds) => {
+  const pad = (num, size) => ('000' + Math.floor(num)).slice(size * -1);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  return `${pad(hours, 2)}:${pad(minutes, 2)}:${pad(secs, 2)},${pad(ms, 3)}`;
+};
+
+const generateSRTString = (text, totalDuration) => {
+  let cleanText = text.replace(/\s+/g, ' ').trim();
+  let segments = cleanText.split(/(?<=[။!?])/).filter(s => s.trim().length > 0);
+  let chunks = [];
+  const MAX_LEN = 35; 
+  segments.forEach(segment => {
+    let s = segment.trim();
+    while (s.length > MAX_LEN) {
+      let splitPos = -1;
+      let commaPos = s.lastIndexOf('၊', MAX_LEN);
+      if (commaPos > 10) splitPos = commaPos + 1;
+      if (splitPos === -1) {
+        let spacePos = s.lastIndexOf(' ', MAX_LEN);
+        if (spacePos > 10) splitPos = spacePos;
+      }
+      if (splitPos === -1) splitPos = MAX_LEN;
+      chunks.push(s.substring(0, splitPos).trim());
+      s = s.substring(splitPos).trim();
+    }
+    if (s.length > 0) chunks.push(s);
+  });
+  if (chunks.length === 0) chunks = [text];
+
+  const totalChars = chunks.reduce((acc, chunk) => acc + chunk.length, 0);
+  let srtContent = '';
+  let currentTime = 0;
+  chunks.forEach((chunk, index) => {
+    const chunkDuration = (chunk.length / totalChars) * totalDuration;
+    const startTime = currentTime;
+    const endTime = currentTime + chunkDuration;
+    srtContent += `${index + 1}\n`;
+    srtContent += `${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n`;
+    srtContent += `${chunk}\n\n`;
+    currentTime = endTime;
+  });
+  return srtContent;
+};
+
+// Date & Time Formatter
+const formatDateTime = (timestamp) => {
+  const date = new Date(timestamp);
+  return date.toLocaleString('en-US', {
+    day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+};
+
+// Countdown Calculator
+const getCountdown = (timestamp, nowTime, t) => {
+  const expiresAt = timestamp + THREE_DAYS_MS;
+  const left = expiresAt - nowTime;
+  if (left <= 0) return t("ဖျက်သိမ်းပြီး", "Expired");
+
+  const h = Math.floor(left / (1000 * 60 * 60));
+  const m = Math.floor((left % (1000 * 60 * 60)) / (1000 * 60));
+  const s = Math.floor((left % (1000 * 60)) / 1000);
+  
+  return `${h}h ${m}m ${s}s`;
+};
+
+// Custom Icons
+const TikTokIcon = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path d="M12.525.02c1.31-.02 2.61-.01 3.91-.02.08 1.53.63 3.09 1.75 4.17 1.12 1.11 2.7 1.62 4.24 1.79v4.03c-1.44-.05-2.89-.35-4.2-.97-.57-.26-1.1-.59-1.62-.93-.01 2.92.01 5.84-.02 8.75-.08 2.23-1.15 4.38-2.9 5.67-1.89 1.39-4.42 1.77-6.57 1.05-2.42-.8-4.14-2.89-4.52-5.41-.39-2.58.64-5.3 2.73-6.84 1.79-1.32 4.18-1.65 6.27-1.01v4.18c-.89-.25-1.86-.21-2.73.08-.85.29-1.55.93-1.95 1.75-.41.85-.45 1.86-.1 2.74.34.88 1.05 1.58 1.94 1.87 1.09.35 2.34.19 3.26-.45.92-.64 1.45-1.68 1.48-2.79.03-4.99.01-9.98.02-14.97z"/>
+  </svg>
+);
+
+const TelegramIcon = ({ className }) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
+    <path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.888-.667 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/>
+  </svg>
+);
+
+
+// --- MAIN COMPONENT ---
+export default function App() {
+  const [lang, setLang] = useState('mm'); 
+  const t = (mmText, enText) => lang === 'mm' ? mmText : enText;
+  const [activeTab, setActiveTab] = useState('script'); 
+  const [toast, setToast] = useState(null);
+  const [nowTime, setNowTime] = useState(Date.now());
+
+  const showToast = (message, type = 'error') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 4000);
+  };
+
+  // --- FIREBASE & HISTORY STATE ---
+  const [user, setUser] = useState(null);
+  const [history, setHistory] = useState([]);
+  const [deletingIds, setDeletingIds] = useState([]);
+
+  // Auth Effect
+  useEffect(() => {
+    if (!auth) return;
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (e) {
+        console.error("Auth Error:", e);
+      }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  // Timer Effect for Countdown (Runs only when on History tab)
+  useEffect(() => {
+    if (activeTab !== 'history') return;
+    const interval = setInterval(() => setNowTime(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [activeTab]);
+
+  // Fetch Firestore Data + 3-Day Auto Delete System (ONLY from Cloud)
+  useEffect(() => {
+    if (!user || !db) return;
+    const historyRef = collection(db, 'artifacts', appId, 'users', user.uid, 'history');
+    
+    const unsubscribe = onSnapshot(historyRef, (snapshot) => {
+      const items = [];
+      const now = Date.now();
+
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        
+        // Auto Delete if older than 3 days (From Cloud Only)
+        if (now - data.timestamp > THREE_DAYS_MS) {
+          deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'history', docSnap.id)).catch(e=>{});
+        } else {
+          items.push({ id: docSnap.id, ...data });
+        }
+      });
+      
+      // Sort to show newest first
+      items.sort((a, b) => b.timestamp - a.timestamp);
+      setHistory(items);
+    }, (err) => console.error("Firestore error:", err));
+    
+    return () => unsubscribe();
+  }, [user]);
+
+  // Safe Hybrid Save Logic (Max Cloud Limit up to ~980,000 chars)
+  const saveHistoryItem = async (item, audioBase64 = null) => {
+    let isLocalOnly = false;
+
+    // Check payload size (Firestore hard limit is 1MB. Set safe threshold to ~980KB)
+    const payloadSize = audioBase64 ? audioBase64.length : 0;
+    if (payloadSize > 980000) {
+       isLocalOnly = true; 
+    }
+
+    const cloudItem = { ...item, hasLocalAudio: isLocalOnly };
+    
+    if (!isLocalOnly && audioBase64) {
+       cloudItem.audioBase64 = audioBase64;
+    } else {
+       delete cloudItem.audioBase64; 
+    }
+
+    if (user && db) {
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'history', item.id), cloudItem);
+      } catch (err) {
+        console.warn("Cloud save failed, forcing local fallback.", err);
+        isLocalOnly = true;
+        cloudItem.hasLocalAudio = true;
+        delete cloudItem.audioBase64;
+        await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'history', item.id), cloudItem).catch(e=>{});
+      }
+    }
+
+    // Save heavy audio payload locally if it exceeded limits
+    if (isLocalOnly && audioBase64) {
+      await saveToLocalDB({ id: item.id, audioBase64 });
+      showToast(t("ဖိုင်ဆိုဒ် 1MB ကျော်လွန်သဖြင့် အသံဖိုင်အား ဤစက်အတွင်း၌သာ ယာယီသိမ်းဆည်းထားပါသည်။", "File > 1MB. Audio saved locally on this device."), "success");
+    }
+  };
+
+  const removeHistoryItem = async (id) => {
+    setDeletingIds(prev => [...prev, id]);
+    setTimeout(async () => {
+      if (user && db) {
+        try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'history', id)); } catch(e) {}
+      }
+      await deleteFromLocalDB(id);
+      setDeletingIds(prev => prev.filter(delId => delId !== id));
+    }, 300);
+  };
+
+  // Content States
+  const [transcriptInput, setTranscriptInput] = useState('');
+  const [scriptOutput, setScriptOutput] = useState('');
+  const [isTranslating, setIsTranslating] = useState(false);
+  
+  // Specific copy states
+  const [copiedScriptId, setCopiedScriptId] = useState(null);
+  const [copiedMain, setCopiedMain] = useState(false);
+  const [copiedTranslator, setCopiedTranslator] = useState(false);
+
+  const [text, setText] = useState(defaultSingleMm);
+  const [selectedVoice, setSelectedVoice] = useState('Charon'); 
+  const [selectedEmotion, setSelectedEmotion] = useState('Neutral');
+  const [selectedSpeed, setSelectedSpeed] = useState('normal'); 
+  const [voiceMode, setVoiceMode] = useState('gemini');
+  const [cloneVoices, setCloneVoices] = useState([]);
+  const [cloneVoiceId, setCloneVoiceId] = useState('');
+  const [cloneVoiceLoading, setCloneVoiceLoading] = useState(false);
+  const [cloneVoiceError, setCloneVoiceError] = useState('');
+  
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState(''); 
+  const [currentAudio, setCurrentAudio] = useState(null);
+  const [currentFullText, setCurrentFullText] = useState(''); 
+  
+  const audioRef = useRef(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isGeneratingSrt, setIsGeneratingSrt] = useState(false);
+
+  const [activeHistoryAudio, setActiveHistoryAudio] = useState(null);
+
+  // --- Hard Cancel Ref for reliable aborting ---
+  const cancelRef = useRef(false);
+
+  // --- DRAGGABLE MUSIC PLAYER ---
+  const [isMusicOpen, setIsMusicOpen] = useState(false);
+  const [localSongs, setLocalSongs] = useState([]);
+  const [currentSongIndex, setCurrentSongIndex] = useState(0);
+  const [isSongPlaying, setIsSongPlaying] = useState(false);
+  const songAudioRef = useRef(null);
+  
+  const [musicPos, setMusicPos] = useState({ x: 0, y: 0 });
+  const [isMounted, setIsMounted] = useState(false);
+  const dragRef = useRef({ isDragging: false, hasMoved: false, startX: 0, startY: 0, lastX: 0, lastY: 0 });
+
+  const pauseBackgroundMusic = () => { if (isSongPlaying) setIsSongPlaying(false); };
+  const resumeBackgroundMusic = () => { if (localSongs.length > 0 && !isSongPlaying) setIsSongPlaying(true); };
+
+  useEffect(() => {
+    setMusicPos({ x: window.innerWidth - 80, y: window.innerHeight - 150 });
+    setIsMounted(true);
+  }, []);
+
+  const handlePointerDown = (e) => {
+    dragRef.current.isDragging = true;
+    dragRef.current.hasMoved = false;
+    const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+    const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+    dragRef.current.startX = clientX;
+    dragRef.current.startY = clientY;
+    dragRef.current.lastX = musicPos.x;
+    dragRef.current.lastY = musicPos.y;
+  };
+
+  const handlePointerMove = (e) => {
+    if (!dragRef.current.isDragging) return;
+    const clientX = e.type.includes('touch') ? e.touches[0].clientX : e.clientX;
+    const clientY = e.type.includes('touch') ? e.touches[0].clientY : e.clientY;
+    const dx = clientX - dragRef.current.startX;
+    const dy = clientY - dragRef.current.startY;
+    
+    if (Math.abs(dx) > 5 || Math.abs(dy) > 5) dragRef.current.hasMoved = true;
+    
+    let newX = dragRef.current.lastX + dx;
+    let newY = dragRef.current.lastY + dy;
+    
+    newX = Math.max(10, Math.min(newX, window.innerWidth - 70));
+    newY = Math.max(10, Math.min(newY, window.innerHeight - 70));
+    
+    setMusicPos({ x: newX, y: newY });
+    if (e.cancelable && dragRef.current.hasMoved) e.preventDefault();
+  };
+
+  const handlePointerUp = () => { dragRef.current.isDragging = false; };
+
+  useEffect(() => {
+    if (!isMounted) return;
+    window.addEventListener('mousemove', handlePointerMove, { passive: false });
+    window.addEventListener('mouseup', handlePointerUp);
+    window.addEventListener('touchmove', handlePointerMove, { passive: false });
+    window.addEventListener('touchend', handlePointerUp);
+
+    return () => {
+      window.removeEventListener('mousemove', handlePointerMove);
+      window.removeEventListener('mouseup', handlePointerUp);
+      window.removeEventListener('touchmove', handlePointerMove);
+      window.removeEventListener('touchend', handlePointerUp);
+    };
+  }, [isMounted, musicPos]);
+
+  const handleMusicBtnClick = (e) => {
+    if (dragRef.current.hasMoved) { e.preventDefault(); return; }
+    setIsMusicOpen(true);
+  };
+
+  const handleMusicUpload = (e) => {
+    const slotsRemaining = 5 - localSongs.length;
+    if (slotsRemaining <= 0) return;
+
+    const files = Array.from(e.target.files).slice(0, slotsRemaining); 
+    if(files.length === 0) return;
+    
+    const newSongs = files.map(file => ({
+      name: file.name,
+      url: URL.createObjectURL(file)
+    }));
+    
+    setLocalSongs(prev => [...prev, ...newSongs]);
+    if (!isSongPlaying && localSongs.length === 0) {
+      setCurrentSongIndex(0);
+      setIsSongPlaying(true);
+    }
+  };
+
+  const handleRemoveSong = (indexToRemove, e) => {
+    e.stopPropagation();
+    const updatedSongs = localSongs.filter((_, idx) => idx !== indexToRemove);
+    setLocalSongs(updatedSongs);
+    
+    if (updatedSongs.length === 0) {
+       setIsSongPlaying(false);
+       setCurrentSongIndex(0);
+    } else if (currentSongIndex === indexToRemove) {
+       setCurrentSongIndex(0); 
+    } else if (currentSongIndex > indexToRemove) {
+       setCurrentSongIndex(prev => prev - 1);
+    }
+  };
+
+  const handleSkipForward = () => {
+    if (localSongs.length === 0) return;
+    setCurrentSongIndex(prev => prev < localSongs.length - 1 ? prev + 1 : 0);
+    setIsSongPlaying(true);
+  };
+
+  const handleSkipBack = () => {
+    if (localSongs.length === 0) return;
+    setCurrentSongIndex(prev => prev > 0 ? prev - 1 : localSongs.length - 1);
+    setIsSongPlaying(true);
+  };
+
+  // Background Music Element logic
+  useEffect(() => {
+    const songAudio = songAudioRef.current;
+    if (!songAudio) return;
+    if (isSongPlaying) {
+      songAudio.play().catch(e => console.error("Playback error:", e));
+    } else {
+      songAudio.pause();
+    }
+  }, [isSongPlaying, currentSongIndex, localSongs]);
+
+
+  // Utilities
+  const copyToClipboard = (textToCopy, onSuccess) => {
+    if (!textToCopy) return;
+    const fallbackCopy = (str) => {
+      const textArea = document.createElement("textarea");
+      textArea.value = str;
+      textArea.style.position = "fixed";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        onSuccess();
+      } catch (err) {}
+      document.body.removeChild(textArea);
+    };
+
+    if (!navigator.clipboard) {
+      fallbackCopy(textToCopy);
+    } else {
+      navigator.clipboard.writeText(textToCopy).then(onSuccess).catch(() => fallbackCopy(textToCopy));
+    }
+  };
+
+  const handleDownload = (audioUrl, id) => {
+    if (!audioUrl) return;
+    try {
+      const a = document.createElement('a');
+      a.href = audioUrl;
+      a.download = `PWA_GYI_Audio_${id || Date.now()}.wav`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      showToast(t("အသံဖိုင် ဒေါင်းလုဒ်ဆွဲပြီးပါပြီ။", "Audio downloaded successfully."), "success");
+    } catch (err) {
+      showToast(t("ဒေါင်းလုဒ်လုပ်ရာတွင် အမှားအယွင်းရှိနေပါသည်။", "Failed to download audio."), "error");
+    }
+  };
+
+  const handleDownloadSRT = async (audioUrl, originalText, id) => {
+    if (!audioUrl || !originalText) return;
+    setIsGeneratingSrt(true);
+    try {
+      const audio = new Audio(audioUrl);
+      await new Promise((resolve, reject) => {
+        audio.addEventListener('loadedmetadata', () => resolve());
+        audio.addEventListener('error', () => reject(new Error("Failed to load audio metadata")));
+      });
+      const duration = audio.duration;
+      const srtString = generateSRTString(originalText, duration);
+      const blob = new Blob(['\uFEFF' + srtString], { type: 'text/srt;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `PWA_GYI_Subtitles_${id || Date.now()}.srt`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 100);
+      showToast(t("SRT ဖိုင် ဒေါင်းလုဒ်ဆွဲပြီးပါပြီ။", "SRT file downloaded successfully."), "success");
+    } catch (err) {
+      showToast(t("SRT ဖိုင်ထုတ်လုပ်ရာတွင် အမှားအယွင်းရှိနေပါသည်။", "Failed to generate SRT."), "error");
+    } finally {
+      setIsGeneratingSrt(false);
+    }
+  };
+
+  // Translating
+  const generateScript = async () => {
+    if (!transcriptInput.trim()) return;
+    setIsTranslating(true);
+    setScriptOutput('');
+
+    const textModel = 'gemini-2.5-flash-preview-09-2025'; 
+    const systemPrompt = `သင်ဟာ Professional Burmese Voice-Over Script Writer တစ်ယောက်ဖြစ်ပါတယ်။ အောက်မှာ ပေးထားတဲ့ Transcript ကို (ဘာသာစကားမရွေး) မြန်မာလို ပြန်ရေးပေးပါ။ အချိန်အညွှန်းမထည့်ပါနဲ့။ သဘာဝကျကျရေးပေးပါ။ Output ကို Code Block အပြင်မှာဘာမှမရေးပါနဲ့။`;
+
+    const payload = {
+      systemInstruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ parts: [{ text: `Transcript: [${transcriptInput}]` }] }]
+    };
+
+    let success = false;
+    let retries = 5;
+    let delay = 1000;
+    
+    while (!success && retries > 0) {
+        try {
+          const response = await fetch('/api/gemini/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model: textModel, payload })
+          });
+
+          if (!response.ok) throw new Error(`API Error: ${response.status}`);
+          const data = await response.json();
+          let resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          resultText = resultText.replace(/^```[a-zA-Z]*\n/i, '').replace(/\n```$/i, '').trim();
+          setScriptOutput(resultText);
+
+          const now = Date.now();
+          const newHistoryItem = {
+            id: `script_${now}`,
+            type: 'script',
+            originalText: transcriptInput,
+            translatedText: resultText,
+            createdAt: new Date().toLocaleString(),
+            timestamp: now
+          };
+          
+          await saveHistoryItem(newHistoryItem);
+          success = true;
+
+        } catch (error) {
+          retries--;
+          if (retries === 0) {
+             showToast(t("ဘာသာပြန်ရာတွင် အမှားအယွင်းဖြစ်ပွားခဲ့ပါသည်။ ပြန်လည်ကြိုးစားပါ။", "Translation failed after multiple retries."), "error");
+             setIsTranslating(false);
+             return;
+          }
+          await new Promise(res => setTimeout(res, delay));
+          delay *= 2; 
+        }
+    }
+    setIsTranslating(false);
+  };
+
+  const loadCloneVoices = async () => {
+    setCloneVoiceLoading(true);
+    setCloneVoiceError('');
+    try {
+      const response = await fetch('/api/voxcpm/voices');
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to load voices');
+      const voices = Array.isArray(data.voices) ? data.voices : [];
+      setCloneVoices(voices);
+      if (!cloneVoiceId && voices[0]?.id) setCloneVoiceId(voices[0].id);
+    } catch (error) {
+      setCloneVoiceError(error.message || 'Failed to load voices');
+    } finally {
+      setCloneVoiceLoading(false);
+    }
+  };
+
+  const generateCloneAudio = async (chunkText) => {
+    const response = await fetch('/api/voxcpm/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: chunkText, voice_id: cloneVoiceId, pace: selectedSpeed })
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `AthanLab API Error ${response.status}`);
+    if (!data.audio) throw new Error('No audio returned from AthanLab.');
+    return { pcm: wavBase64ToPcm(data.audio), sampleRate: data.sample_rate || 48000 };
+  };
+
+  // Text-To-Speech
+  const generateTTS = async () => {
+    const cleanText = text.trim();
+    if (!cleanText) return;
+    if (voiceMode === 'clone' && !cloneVoiceId) {
+      showToast(t('အရင်ဆုံး Voice Clone တစ်ခုရွေးပါ။', 'Please select a cloned voice first.'), 'error');
+      return;
+    }
+    
+    // Initialize cancellation state
+    cancelRef.current = false;
+
+    setIsGenerating(true);
+    setGenerationProgress('');
+    setCurrentAudio(null);
+    setIsPlaying(false);
+    setCurrentFullText(cleanText); 
+
+    const endpointModel = 'gemini-2.5-flash-preview-tts'; 
+    const em = EMOTIONS.find(e => e.id === selectedEmotion)?.enLabel || "Neutral";
+    const sp = SPEEDS.find(s => s.id === selectedSpeed)?.prompt || "normal";
+
+    // SMART CHUNKING ALGORITHM (Max 2000 characters safely bounded to avoid skipping and keep consistency)
+    const MAX_CHUNK_LENGTH = 2000; 
+    const finalChunks = [];
+    let currentText = cleanText;
+
+    while (currentText.length > 0) {
+      if (currentText.length <= MAX_CHUNK_LENGTH) {
+        finalChunks.push(currentText);
+        break;
+      }
+      
+      // Look for natural breaking points to prevent awkward cut-offs
+      let breakPoint = currentText.lastIndexOf('။', MAX_CHUNK_LENGTH);
+      if (breakPoint === -1 || breakPoint < MAX_CHUNK_LENGTH - 600) {
+          breakPoint = currentText.lastIndexOf('၊', MAX_CHUNK_LENGTH);
+      }
+      if (breakPoint === -1 || breakPoint < MAX_CHUNK_LENGTH - 600) {
+          breakPoint = currentText.lastIndexOf('\n', MAX_CHUNK_LENGTH);
+      }
+      if (breakPoint === -1 || breakPoint < MAX_CHUNK_LENGTH - 600) {
+          breakPoint = currentText.lastIndexOf(' ', MAX_CHUNK_LENGTH);
+      }
+      if (breakPoint === -1) {
+          breakPoint = MAX_CHUNK_LENGTH; // Hard split if no punctuation
+      } else {
+          breakPoint += 1; // Include the punctuation
+      }
+
+      finalChunks.push(currentText.substring(0, breakPoint).trim());
+      currentText = currentText.substring(breakPoint).trim();
+    }
+
+    let allPcmArrays = [];
+    let hasError = false;
+
+    // Process each chunk sequentially
+    for (let i = 0; i < finalChunks.length; i++) {
+      if (cancelRef.current) break; // Check for cancel
+
+      if (finalChunks.length > 1) {
+          setGenerationProgress(`(${i + 1}/${finalChunks.length})`);
+      }
+      const chunkText = finalChunks[i];
+
+      let prompt = chunkText;
+      if (voiceMode === 'gemini' && (em !== 'Neutral' || sp !== 'normal')) {
+        let toneParts = [];
+        if (em !== 'Neutral') toneParts.push(`a ${em.toLowerCase()} tone`);
+        if (sp !== 'normal') toneParts.push(`a ${sp} pace`);
+        prompt = `Read the following text consistently in ${toneParts.join(' and ')}:\n\n${chunkText}`;
+      }
+
+      const payload = {
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: selectedVoice } } }
+        },
+        model: endpointModel
+      };
+
+      let success = false;
+      let retries = 5; 
+      let delay = 2000;
+      
+      while (!success && retries > 0 && !cancelRef.current) {
+        
+        // Use an isolated controller just for this specific fetch attempt
+        const chunkController = new AbortController();
+        
+        // Timeout Logic (Timeout after 60 seconds per chunk request)
+        const timeoutId = setTimeout(() => {
+             chunkController.abort("timeout");
+        }, 60000); 
+
+        // Interval to check if user pressed the global cancel button
+        const checkCancel = setInterval(() => {
+             if (cancelRef.current) chunkController.abort("user_cancelled");
+        }, 500);
+
+        try {
+          let response;
+          let cloneData = null;
+          if (voiceMode === 'clone') {
+            const cloneFetch = fetch('/api/voxcpm/generate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ text: chunkText, voice_id: cloneVoiceId, pace: selectedSpeed }),
+              signal: chunkController.signal
+            });
+            response = await cloneFetch;
+          } else {
+            response = await fetch('/api/gemini/generate', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ model: endpointModel, payload }),
+              signal: chunkController.signal
+            });
+          }
+
+          clearTimeout(timeoutId);
+          clearInterval(checkCancel);
+
+          if (!response.ok) {
+             const errorText = await response.text();
+             throw new Error(`API Error ${response.status}: ${errorText}`);
+          }
+          
+          const data = await response.json();
+          const base64Audio = voiceMode === 'clone' ? data.audio : data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+          
+          if (base64Audio) {
+            const audioBytes = voiceMode === 'clone' ? wavBase64ToPcm(base64Audio) : base64ToUint8Array(base64Audio);
+            allPcmArrays.push(audioBytes);
+            success = true;
+            
+            // Wait 1 second before sending the next chunk to avoid "429 Too Many Requests" while keeping it fast
+            if (i < finalChunks.length - 1 && !cancelRef.current) {
+               await new Promise(res => setTimeout(res, 1000));
+            }
+          } else {
+            throw new Error("No audio data inside the response.");
+          }
+        } catch (error) {
+          clearTimeout(timeoutId);
+          clearInterval(checkCancel);
+
+          if (cancelRef.current || error.name === 'AbortError' || error === 'user_cancelled') {
+             break; // Cancelled completely
+          }
+          
+          console.warn(`Attempt ${6 - retries} failed:`, error.message);
+          retries--;
+          
+          if (retries === 0) {
+             hasError = true;
+             break;
+          }
+          // Exponential backoff
+          await new Promise(res => setTimeout(res, delay));
+          delay = Math.min(delay * 2, 10000); 
+        }
+      }
+      
+      if (hasError || cancelRef.current) break;
+    }
+
+    // Handle Cancelled state
+    if (cancelRef.current) {
+       return; 
+    }
+
+    if (hasError || allPcmArrays.length === 0) {
+       showToast(t(`အသံဖန်တီးရာတွင် အမှားအယွင်းရှိနေပါသည်။ Server အလုပ်များနေနိုင်ပါသည်။ ခဏနေမှ ထပ်မံကြိုးစားကြည့်ပါ။`, `Generation Error or Server Timeout. Please try again.`), "error");
+       setIsGenerating(false);
+       setGenerationProgress('');
+       return;
+    }
+
+    // Combine all chunks into a single WAV file seamlessly
+    try {
+        const finalWavBlob = createWavBlob(allPcmArrays, voiceMode === 'clone' ? 48000 : 24000);
+        const audioUrl = URL.createObjectURL(finalWavBlob);
+        setCurrentAudio(audioUrl);
+        
+        const base64DataUrl = await blobToBase64(finalWavBlob);
+        const now = Date.now();
+        const emotionObj = EMOTIONS.find(e => e.id === selectedEmotion);
+        const speedObj = SPEEDS.find(s => s.id === selectedSpeed);
+        const voiceNameStr = voiceMode === 'clone' ? (cloneVoices.find(v => v.id === cloneVoiceId)?.name || `Voice Clone (${cloneVoiceId})`) : t(VOICES.find(v => v.id === selectedVoice)?.name, VOICES.find(v => v.id === selectedVoice)?.enName);
+        
+        const newHistoryItem = {
+          id: `audio_${now}`,
+          type: 'audio',
+          text: cleanText.substring(0, 100) + (cleanText.length > 100 ? '...' : ''),
+          fullText: cleanText, 
+          voice: voiceNameStr,
+          emotionLabel: { mm: `${emotionObj.label}`, en: `${emotionObj.enLabel}` },
+          speedLabel: { mm: `${speedObj.label}`, en: `${speedObj.enLabel}` },
+          emotionEmoji: emotionObj.emoji,
+          speedEmoji: speedObj.emoji,
+          createdAt: new Date().toLocaleString(),
+          timestamp: now
+        };
+        
+        await saveHistoryItem(newHistoryItem, base64DataUrl);
+    } catch (err) {
+        showToast(t(`အသံဖိုင်ပေါင်းစပ်ရာတွင် အမှားအယွင်းဖြစ်သွားပါသည်။`, `Error combining audio chunks.`), "error");
+    }
+
+    setIsGenerating(false);
+    setGenerationProgress('');
+  };
+
+  const handleCancelGeneration = () => {
+     cancelRef.current = true; // Hard trigger to break all loops immediately
+     setIsGenerating(false);
+     setGenerationProgress('');
+     showToast(t("ရပ်တန့်လိုက်ပါပြီ", "Cancelled"), "error");
+  };
+
+  const toggleMainPlay = () => {
+    if (!audioRef.current) return;
+    
+    if (isPlaying) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      pauseBackgroundMusic(); 
+      audioRef.current.play().then(() => {
+        setIsPlaying(true);
+      }).catch(e => {
+        console.error("Audio playback error:", e);
+        setIsPlaying(false);
+      });
+    }
+  };
+
+  // Safe History Audio toggle
+  const toggleHistoryAudio = async (item) => {
+    if (activeHistoryAudio?.id === item.id) {
+       setActiveHistoryAudio(null);
+       resumeBackgroundMusic();
+    } else {
+       pauseBackgroundMusic();
+       
+       let base64Audio = item.audioBase64;
+       if (!base64Audio && item.hasLocalAudio) {
+          base64Audio = await getLocalAudio(item.id);
+       }
+
+       if (base64Audio) {
+          setActiveHistoryAudio({ ...item, playableSrc: base64Audio });
+       } else {
+          showToast(t("အသံဖိုင်မရှိတော့ပါ။", "Audio file not found."), "error");
+          resumeBackgroundMusic();
+       }
+    }
+  };
+
+  return (
+    <div className="font-mm min-h-screen bg-gray-950 text-gray-100 selection:bg-blue-500/30 font-sans relative overflow-hidden">
+      
+      {/* Moving Neon Gradient Background */}
+      <div className="fixed inset-0 moving-gradient-bg opacity-30 pointer-events-none z-0"></div>
+      
+      {toast && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[100] animate-fade-in-up">
+          <div className={classNames(
+            "flex items-center gap-3 px-6 py-4 rounded-2xl shadow-[0_0_20px_rgba(0,0,0,0.5)] border backdrop-blur-xl",
+            toast.type === 'error' ? "bg-red-900/40 border-red-500/50 text-red-100 shadow-red-500/20" : "bg-green-900/40 border-green-500/50 text-green-100 shadow-green-500/20"
+          )}>
+            {toast.type === 'error' ? <Info className="w-5 h-5 text-red-400" /> : <CheckCircle2 className="w-5 h-5 text-green-400" />}
+            <span className="text-sm font-medium">{toast.message}</span>
+          </div>
+        </div>
+      )}
+
+      {/* HEADER */}
+      <header className="relative z-10 bg-black/50 backdrop-blur-2xl sticky top-0 z-50 shadow-[0_4px_30px_rgba(0,0,0,0.5)] border-b border-white/5">
+        <div className="max-w-6xl mx-auto px-4 h-[76px] flex items-center justify-between">
+          <div className="flex items-center gap-2"> 
+            <div className="w-14 h-14 rounded-2xl flex items-center justify-center p-[2px] shrink-0 moving-gradient-bg shadow-[0_0_20px_rgba(255,255,255,0.2)]">
+              <div className="w-full h-full bg-black/90 backdrop-blur-md rounded-[14px] flex items-center justify-center">
+                <span className="text-white font-black text-2xl tracking-tighter leading-none mt-1" style={{ textShadow: '0 0 10px rgba(255,255,255,0.8)' }}>PG</span>
+              </div>
+            </div>
+            <div className="flex flex-col justify-center min-w-0">
+              <h1 className="text-xl md:text-3xl font-black tracking-tight whitespace-nowrap neon-text pb-1">
+                Pwa Gyi AI Studio
+              </h1>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
+            <nav className="hidden md:flex bg-black/40 p-1 rounded-full border border-white/10 backdrop-blur-md shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+              {[
+                { id: 'script', icon: FileText, label: t('ဇာတ်ညွှန်း', 'Script') },
+                { id: 'generator', icon: Volume2, label: t('အသံဖန်တီးရန်', 'Generator') },
+                { id: 'history', icon: Clock, label: t('မှတ်တမ်း', 'History') }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={classNames(
+                    "flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-medium transition-all duration-300",
+                    activeTab === tab.id 
+                      ? "moving-gradient-bg text-white shadow-[0_0_15px_rgba(255,255,255,0.4)] border-none" 
+                      : "text-gray-400 hover:text-white hover:bg-white/10"
+                  )}
+                >
+                  <tab.icon className="w-3.5 h-3.5" />
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+            
+            <div 
+              onClick={() => setLang(l => l === 'mm' ? 'en' : 'mm')}
+              className="relative flex items-center bg-black/50 border border-white/10 rounded-full p-1 cursor-pointer w-20 h-7 shadow-inner select-none"
+            >
+              <div 
+                className={classNames(
+                  "absolute top-1 bottom-1 w-[36px] rounded-full transition-all duration-300 shadow-[0_0_10px_rgba(255,255,255,0.5)] moving-gradient-bg",
+                  lang === 'en' ? "left-1" : "left-[40px]"
+                )}
+              ></div>
+              <div className="relative z-10 flex-1 text-center text-[9px] font-bold text-white pointer-events-none drop-shadow-md">EN</div>
+              <div className="relative z-10 flex-1 text-center text-[9px] font-bold text-white pointer-events-none drop-shadow-md mt-0.5">မြန်မာ</div>
+            </div>
+          </div>
+        </div>
+
+        {/* SOCIAL ICONS SUB-HEADER (NEON GLOW) */}
+        <div className="relative w-full bg-black/30 backdrop-blur-xl border-t border-white/5 py-3 overflow-hidden flex justify-center items-center shadow-[0_2px_15px_rgba(0,0,0,0.3)]">
+          {/* Background Marquee */}
+          <div className="absolute inset-0 flex items-center select-none pointer-events-none opacity-20">
+            <div className="marquee-ltr flex whitespace-nowrap">
+              <div className="flex gap-10 px-5 min-w-full justify-around">
+                 {[...Array(15)].map((_, i) => (
+                   <span key={i} className="text-white font-black text-xs tracking-[0.2em] drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">PWA GYI KNOWLEDGE SHARING</span>
+                 ))}
+              </div>
+              <div className="flex gap-10 px-5 min-w-full justify-around">
+                 {[...Array(15)].map((_, i) => (
+                   <span key={i} className="text-white font-black text-xs tracking-[0.2em] drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">PWA GYI KNOWLEDGE SHARING</span>
+                 ))}
+              </div>
+            </div>
+          </div>
+          
+          {/* Foreground Social Icons */}
+          <div className="relative z-10 flex items-center gap-8">
+            <a href="https://youtube.com/@pgknowledgesharing" target="_blank" rel="noreferrer" className="text-red-500 hover:text-red-400 drop-shadow-[0_0_8px_rgba(239,68,68,0.8)] hover:drop-shadow-[0_0_15px_rgba(239,68,68,1)] transition-all hover:scale-125" title="YouTube"><span className="text-xs font-bold">YT</span></a>
+            <a href="https://www.tiktok.com/@pgknowledgesharing" target="_blank" rel="noreferrer" className="text-gray-100 hover:text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.6)] hover:drop-shadow-[0_0_15px_rgba(255,255,255,1)] transition-all hover:scale-125" title="TikTok"><TikTokIcon className="w-3.5 h-3.5" /></a>
+            <a href="https://www.facebook.com/share/1B2DQYgbwh" target="_blank" rel="noreferrer" className="text-blue-500 hover:text-blue-400 drop-shadow-[0_0_8px_rgba(59,130,246,0.8)] hover:drop-shadow-[0_0_15px_rgba(59,130,246,1)] transition-all hover:scale-125" title="Facebook"><span className="text-xs font-bold">FB</span></a>
+            <a href="https://t.me/pwagyichannel" target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 drop-shadow-[0_0_8px_rgba(96,165,250,0.8)] hover:drop-shadow-[0_0_15px_rgba(96,165,250,1)] transition-all hover:scale-125" title="Telegram"><TelegramIcon className="w-4 h-4" /></a>
+          </div>
+        </div>
+      </header>
+
+      {/* DRAGGABLE MUSIC ICON */}
+      {isMounted && (
+        <button 
+          onPointerDown={handlePointerDown}
+          onClick={handleMusicBtnClick}
+          style={{ left: musicPos.x, top: musicPos.y, position: 'fixed', touchAction: 'none' }}
+          className="z-[80] w-14 h-14 rounded-full flex items-center justify-center text-white moving-gradient-bg shadow-[0_0_20px_rgba(255,255,255,0.6)] border border-white/20 cursor-grab active:cursor-grabbing hover:scale-105 transition-transform"
+          title="Drag anywhere!"
+        >
+          <Music className={classNames("w-6 h-6", isSongPlaying && "animate-pulse")} />
+          <div className="absolute -top-1 -right-1 bg-black/50 rounded-full p-1 shadow-md border border-white/10">
+            <GripVertical className="w-3 h-3 text-white" />
+          </div>
+        </button>
+      )}
+
+      {/* Persistent Audio Element - outside the modal so it plays even when closed */}
+      {localSongs.length > 0 && (
+        <audio 
+          ref={songAudioRef} 
+          src={localSongs[currentSongIndex].url} 
+          onEnded={handleSkipForward}
+          className="hidden" 
+        />
+      )}
+
+      {/* OVERLAY CENTERED Music Player Modal */}
+      {isMusicOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in" onClick={() => setIsMusicOpen(false)}>
+          <div className="w-full max-w-sm bg-black/95 backdrop-blur-2xl border border-white/20 rounded-3xl p-6 shadow-[0_0_40px_rgba(255,255,255,0.2)] animate-fade-in-up" onClick={e => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="font-bold text-lg text-white flex items-center gap-2 neon-text pb-1"><Music className="w-5 h-5"/> {t("Local Player", "Local Player")}</h3>
+              <div className="flex items-center gap-3">
+                {localSongs.length > 0 && (
+                  <span className="text-xs font-mono bg-white/10 px-2 py-1 rounded-md text-white border border-white/20">
+                    {currentSongIndex + 1}/{localSongs.length}
+                  </span>
+                )}
+                <button onClick={() => setIsMusicOpen(false)} className="text-gray-400 hover:text-red-400 bg-white/5 p-1.5 rounded-full transition-colors"><X className="w-5 h-5"/></button>
+              </div>
+            </div>
+            
+            {/* Conditional Upload Box */}
+            {localSongs.length < 5 && (
+              <label className="block w-full py-5 px-4 mb-6 text-center text-sm border-2 border-dashed border-white/20 rounded-2xl hover:bg-white/10 cursor-pointer transition-colors text-gray-300">
+                <Music className="w-8 h-8 mx-auto mb-2 text-white/50" />
+                <span className="font-medium text-blue-300">
+                  {localSongs.length === 0 
+                    ? t("သီချင်း (၅) ပုဒ်အထိ ရွေးချယ်ပါ", "Choose up to 5 songs") 
+                    : t(`နောက်ထပ် သီချင်း (${5 - localSongs.length}) ပုဒ် ထပ်ရွေးနိုင်ပါသည်`, `You can select ${5 - localSongs.length} more song(s)`)}
+                </span>
+                <input type="file" accept="audio/*" multiple onChange={handleMusicUpload} className="hidden" />
+              </label>
+            )}
+
+            {localSongs.length > 0 && (
+              <div className="space-y-4">
+                 {/* Current Playing Indicator */}
+                 <div className="text-sm text-center text-white font-medium drop-shadow-[0_0_5px_rgba(255,255,255,0.8)] bg-white/5 p-3 rounded-xl border border-white/10 flex justify-between items-center gap-2">
+                    <span className="truncate flex-1 text-left">{localSongs[currentSongIndex].name}</span>
+                 </div>
+                 
+                 {/* Track List with Remove buttons */}
+                 <div className="max-h-32 overflow-y-auto custom-scrollbar pr-2 space-y-1 bg-black/40 p-2 rounded-xl border border-white/10">
+                    {localSongs.map((song, idx) => (
+                       <div key={idx} className={classNames("flex items-center justify-between gap-2 p-2 rounded-lg text-xs", currentSongIndex === idx ? "bg-white/20 text-white" : "text-gray-400 hover:bg-white/5")}>
+                          <span className="truncate cursor-pointer flex-1" onClick={() => { setCurrentSongIndex(idx); setIsSongPlaying(true); }}>
+                             {idx + 1}. {song.name}
+                          </span>
+                          <button onClick={(e) => handleRemoveSong(idx, e)} className="p-1 hover:text-red-400 text-gray-500 transition-colors">
+                             <X className="w-3.5 h-3.5" />
+                          </button>
+                       </div>
+                    ))}
+                 </div>
+
+                <div className="flex justify-center items-center gap-6 mt-4">
+                  <button onClick={handleSkipBack} className="p-3 bg-white/10 rounded-full hover:bg-white/20 text-white transition-colors"><SkipBack className="w-5 h-5"/></button>
+                  <button onClick={() => setIsSongPlaying(!isSongPlaying)} className="p-4 rounded-full text-white moving-gradient-bg shadow-[0_0_20px_rgba(255,255,255,0.5)] transition-transform hover:scale-110">
+                    {isSongPlaying ? <Pause className="w-6 h-6"/> : <Play className="w-6 h-6 ml-1"/>}
+                  </button>
+                  <button onClick={handleSkipForward} className="p-3 bg-white/10 rounded-full hover:bg-white/20 text-white transition-colors"><SkipForward className="w-5 h-5"/></button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-black/90 backdrop-blur-xl border-t border-white/10 p-2 flex justify-around items-center shadow-[0_-5px_20px_rgba(0,0,0,0.5)]">
+        {[
+          { id: 'script', icon: FileText, label: t('ဇာတ်ညွှန်း', 'Script') },
+          { id: 'generator', icon: Volume2, label: t('ဖန်တီးမည်', 'Generate') },
+          { id: 'history', icon: Clock, label: t('မှတ်တမ်း', 'History') }
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={classNames(
+              "flex flex-col items-center gap-1 p-2 w-20 transition-colors",
+              activeTab === tab.id ? "neon-text drop-shadow-[0_0_5px_rgba(255,255,255,0.8)]" : "text-gray-500"
+            )}
+          >
+            <tab.icon className="w-5 h-5" />
+            <span className="text-[10px] font-bold">{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      <main className="relative z-10 max-w-6xl mx-auto px-4 py-8 pb-24 md:pb-8 mt-2">
+        
+        {/* --- SCRIPT TRANSLATOR TAB --- */}
+        {activeTab === 'script' && (
+          <div className="space-y-6 animate-fade-in">
+            <div className="text-center mb-8">
+              <h2 className="text-2xl md:text-3xl font-bold flex items-center justify-center gap-3 neon-text pb-1">
+                <Sparkles className="w-6 h-6 text-white drop-shadow-[0_0_8px_rgba(255,255,255,1)]" />
+                {t("AI ဇာတ်ညွှန်း ဘာသာပြန်", "AI Script Translator")}
+              </h2>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="space-y-3">
+                <label className="text-sm font-bold text-white flex items-center gap-2 drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">
+                  <FileText className="w-4 h-4" /> {t("မူရင်းစာသား (Original)", "Original Transcript")}
+                </label>
+                <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-2xl p-1 shadow-[0_0_20px_rgba(0,0,0,0.5)] relative transition-all focus-within:shadow-[0_0_15px_rgba(255,255,255,0.3)]">
+                  <textarea
+                    value={transcriptInput}
+                    onChange={(e) => setTranscriptInput(e.target.value)}
+                    placeholder={t("Paste transcript here...", "Paste any language transcript here...")}
+                    className="w-full h-[400px] bg-transparent text-gray-200 p-5 resize-none outline-none text-lg leading-relaxed placeholder:text-gray-600 custom-scrollbar"
+                  />
+                  {transcriptInput && (
+                    <button onClick={() => setTranscriptInput('')} className="absolute bottom-4 right-4 p-2 rounded-lg bg-white/10 hover:bg-red-500/30 text-white transition-colors border border-white/10"><Trash2 className="w-4 h-4" /></button>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                <label className="text-sm font-bold text-white flex items-center gap-2 drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">
+                  <Check className="w-4 h-4" /> {t("မြန်မာဇာတ်ညွှန်း (Burmese)", "Burmese Script")}
+                </label>
+                <div className="neon-border bg-black/60 backdrop-blur-xl rounded-2xl p-1 shadow-[0_0_20px_rgba(0,0,0,0.5)] relative transition-all">
+                  <textarea
+                    value={scriptOutput}
+                    onChange={(e) => setScriptOutput(e.target.value)}
+                    placeholder={t("Translated script will appear here...", "Translated script will appear here...")}
+                    className="w-full h-[400px] bg-transparent text-white p-5 resize-none outline-none text-lg font-medium leading-relaxed placeholder:text-gray-600 custom-scrollbar"
+                  />
+                  <div className="absolute bottom-4 right-4 flex items-center gap-2">
+                    <button 
+                      onClick={() => {
+                        copyToClipboard(scriptOutput, () => {
+                           setCopiedTranslator(true);
+                           setTimeout(() => setCopiedTranslator(false), 2000);
+                        });
+                      }} 
+                      className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white transition-colors border border-white/10"
+                    >
+                      {copiedTranslator ? <Check className="w-4 h-4 text-green-400 drop-shadow-[0_0_5px_rgba(74,222,128,0.8)]" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                    {scriptOutput && <button onClick={() => setScriptOutput('')} className="p-2 rounded-lg bg-white/10 hover:bg-red-500/30 text-white transition-colors border border-white/10"><Trash2 className="w-4 h-4" /></button>}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4 pt-4">
+              <button
+                onClick={generateScript}
+                disabled={isTranslating || !transcriptInput.trim()}
+                className="w-full sm:w-auto relative group moving-gradient-bg text-white font-bold py-4 px-8 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.3)] transition-all hover:scale-105 disabled:opacity-50 disabled:hover:scale-100"
+              >
+                <div className="relative flex items-center justify-center gap-2">
+                  {isTranslating ? <><Loader2 className="w-5 h-5 animate-spin shrink-0" /> <span>{t("ဘာသာပြန်နေပါသည်...", "Translating...")}</span></> : <><Activity className="w-5 h-5 shrink-0" /> <span>{t("ဇာတ်ညွှန်း ဘာသာပြန်ပါ", "Translate Script")}</span></>}
+                </div>
+              </button>
+
+              {scriptOutput && (
+                <button
+                  onClick={() => { setText(scriptOutput); setActiveTab('generator'); }}
+                  className="w-full sm:w-auto relative group bg-white/10 backdrop-blur-md border border-white/30 text-white font-bold py-4 px-8 rounded-xl shadow-[0_0_15px_rgba(255,255,255,0.2)] transition-all hover:bg-white/20 hover:scale-105"
+                >
+                  <div className="relative flex items-center justify-center gap-2">
+                    <Send className="w-5 h-5 shrink-0" /> <span>{t("အသံဖန်တီးရန်သို့ ပို့မည်", "Send to Generator")}</span>
+                  </div>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* --- GENERATOR TAB --- */}
+        {activeTab === 'generator' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fade-in">
+            <div className="lg:col-span-2 space-y-4">
+              <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-2xl p-1 shadow-[0_0_25px_rgba(0,0,0,0.6)] relative transition-all focus-within:shadow-[0_0_15px_rgba(255,255,255,0.3)]">
+                <textarea
+                  value={text}
+                  onChange={(e) => { 
+                    setText(e.target.value); 
+                    setCurrentAudio(null); 
+                    setIsPlaying(false); 
+                  }}
+                  className="w-full h-[450px] bg-transparent text-white p-5 resize-none outline-none text-lg font-medium leading-relaxed placeholder:text-gray-600 custom-scrollbar"
+                />
+                <div className="absolute bottom-4 right-4 flex items-center gap-2">
+                  <span className="text-xs text-gray-400 font-mono mr-2">
+                     {text.length} {t('စာလုံး', 'chars')}
+                  </span>
+                  <button 
+                    onClick={() => {
+                      copyToClipboard(text, () => {
+                         setCopiedMain(true);
+                         setTimeout(() => setCopiedMain(false), 2000);
+                      });
+                    }} 
+                    className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white border border-white/10"
+                  >
+                    {copiedMain ? <Check className="w-4 h-4 text-green-400 drop-shadow-[0_0_5px_rgba(74,222,128,0.8)]" /> : <Copy className="w-4 h-4" />}
+                  </button>
+                  <button onClick={() => { setText(''); setCurrentAudio(null); setIsPlaying(false); }} className="p-2 rounded-lg bg-white/10 hover:bg-red-500/30 text-white border border-white/10"><Trash2 className="w-4 h-4" /></button>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-2xl p-6 shadow-[0_0_25px_rgba(0,0,0,0.5)] space-y-6">
+                
+                {/* Voice Engine */}
+                <div className="space-y-3">
+                  <label className="text-sm font-bold text-white flex items-center gap-2">
+                    <Sparkles className="w-4 h-4" /> {t('အသံ Engine', 'Voice Engine')}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setVoiceMode('gemini')} className={classNames('py-3 rounded-xl border text-sm font-bold', voiceMode === 'gemini' ? 'moving-gradient-bg border-white/30 text-white' : 'bg-white/5 border-white/10 text-gray-400')}>🤖 Gemini</button>
+                    <button onClick={() => { setVoiceMode('clone'); if (!cloneVoices.length) loadCloneVoices(); }} className={classNames('py-3 rounded-xl border text-sm font-bold', voiceMode === 'clone' ? 'moving-gradient-bg border-white/30 text-white' : 'bg-white/5 border-white/10 text-gray-400')}>🎙️ My Voice Clone</button>
+                  </div>
+                </div>
+
+                {voiceMode === 'clone' && (
+                  <div className="space-y-3 p-4 rounded-xl bg-white/5 border border-white/10">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-sm font-bold text-white flex items-center gap-2"><UserRound className="w-4 h-4" /> {t('Voice Clone', 'Voice Clone')}</label>
+                      <button onClick={loadCloneVoices} disabled={cloneVoiceLoading} className="p-2 rounded-lg bg-white/10 hover:bg-white/20 text-white" title="Refresh voices"><RefreshCw className={classNames('w-4 h-4', cloneVoiceLoading && 'animate-spin')} /></button>
+                    </div>
+                    <select value={cloneVoiceId} onChange={e => setCloneVoiceId(e.target.value)} className="w-full bg-black/60 border border-white/10 rounded-lg p-3 text-white outline-none">
+                      <option value="">{t('Clone Voice ရွေးပါ', 'Select cloned voice')}</option>
+                      {cloneVoices.map(v => <option key={v.id} value={v.id}>{v.name} {v.source ? `— ${v.source}` : ''}</option>)}
+                    </select>
+                    {cloneVoiceError && <div className="text-xs text-red-300">{cloneVoiceError}</div>}
+                    <a href="https://athanlab.com/dashboard/generate" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 py-2.5 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-bold border border-white/10"><ExternalLink className="w-4 h-4" /> {t('AthanLab မှာ Voice Clone ဖန်တီးရန်', 'Create Voice Clone in AthanLab')}</a>
+                    <p className="text-[10px] text-gray-400 leading-relaxed">{t('Clone ပြီးရင် Refresh နှိပ်ပြီး Voice ကိုရွေးပါ။ Clone API က Emotion မပို့နိုင်သေးသောကြောင့် Speed ကိုသာ အသုံးပြုပါမယ်။', 'Create your clone in AthanLab, then Refresh and select it. The clone API currently exposes pace, so speed is applied while the Gemini-only emotion setting is ignored.')}</p>
+                  </div>
+                )}
+
+                {/* Voice Selection */}
+                {voiceMode === 'gemini' && <div className="space-y-3">
+                  <label className="text-sm font-bold text-white flex items-center gap-2 drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">
+                    <Mic className="w-4 h-4" /> {t("အသံသရုပ်ဆောင် (၂၀ မျိုး)", "Voice Actor (20 options)")}
+                  </label>
+                  <div className="flex flex-col gap-1.5 max-h-[160px] overflow-y-auto pr-2 custom-scrollbar bg-black/40 p-2 rounded-xl border border-white/10">
+                    {VOICES.map(voice => (
+                      <button
+                        key={voice.id}
+                        onClick={() => setSelectedVoice(voice.id)}
+                        className={classNames(
+                          "text-left p-3 rounded-xl border transition-all flex items-center justify-between shrink-0",
+                          selectedVoice === voice.id ? "moving-gradient-bg border-white/30 text-white shadow-[0_0_10px_rgba(255,255,255,0.4)]" : "bg-white/5 border-transparent text-gray-300 hover:bg-white/10"
+                        )}
+                      >
+                        <div>
+                          <div className="font-bold text-sm flex items-center gap-2">
+                            {t(voice.name, voice.enName)}
+                            <span className={classNames("text-[10px] px-1.5 py-0.5 rounded flex items-center justify-center shadow-[0_0_5px_rgba(255,255,255,0.2)]", voice.gender === 'Male' ? "bg-blue-500/20 text-blue-300" : "bg-pink-500/20 text-pink-300")}>
+                              {t(voice.mmGender, voice.gender)}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-gray-400 mt-1">{t(voice.desc, voice.enDesc)}</div>
+                        </div>
+                        {selectedVoice === voice.id && <Check className="w-4 h-4 text-white drop-shadow-[0_0_5px_rgba(255,255,255,0.8)]" />}
+                      </button>
+                    ))}
+                  </div>
+                 </div>}
+
+                {/* Speed Control */}
+                <div className="space-y-3">
+                  <label className="text-sm font-bold text-white flex items-center gap-2 drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">
+                    <Gauge className="w-4 h-4" /> {t("စကားပြော အမြန်နှုန်း (Speed)", "Speaking Pace")}
+                  </label>
+                  <div className="flex gap-2">
+                    {SPEEDS.map(speed => (
+                      <button
+                        key={speed.id}
+                        onClick={() => setSelectedSpeed(speed.id)}
+                        className={classNames(
+                          "flex-1 py-2.5 rounded-lg text-xs sm:text-sm font-bold border transition-all flex items-center justify-center gap-1.5",
+                          selectedSpeed === speed.id ? "moving-gradient-bg border-white/30 text-white shadow-[0_0_10px_rgba(255,255,255,0.4)]" : "bg-white/5 border-transparent text-gray-400 hover:bg-white/10"
+                        )}
+                      >
+                        <span className="text-base">{speed.emoji}</span>
+                        <span>{t(speed.label, speed.enLabel)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Emotion Selection */}
+                <div className="space-y-3">
+                  <label className="text-sm font-bold text-white flex items-center gap-2 drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">
+                    <Activity className="w-4 h-4" /> {t("ခံစားချက် နှင့် လေသံ (၂၀ မျိုး)", "Emotion & Tone (20 options)")}
+                  </label>
+                  <div className="flex flex-col gap-1.5 max-h-[140px] overflow-y-auto pr-2 custom-scrollbar bg-black/40 p-2 rounded-xl border border-white/10">
+                    {EMOTIONS.map(emotion => (
+                      <button
+                        key={emotion.id}
+                        onClick={() => setSelectedEmotion(emotion.id)}
+                        className={classNames(
+                          "px-3 py-3 rounded-xl text-sm font-medium border transition-all flex items-center justify-start gap-3 shrink-0",
+                          selectedEmotion === emotion.id ? "moving-gradient-bg border-white/30 text-white shadow-[0_0_10px_rgba(255,255,255,0.4)]" : "bg-white/5 border-transparent text-gray-300 hover:bg-white/10"
+                        )}
+                      >
+                        <span className="text-lg shrink-0">{emotion.emoji}</span>
+                        <span className="truncate">{t(emotion.label, emotion.enLabel)}</span>
+                        {selectedEmotion === emotion.id && <Check className="w-4 h-4 text-white drop-shadow-[0_0_5px_rgba(255,255,255,0.8)] ml-auto" />}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex gap-2 mt-4 relative z-10">
+                  <button
+                    onClick={generateTTS}
+                    disabled={isGenerating || !text.trim()}
+                    className={classNames(
+                      "flex-1 relative moving-gradient-bg text-white font-bold py-4 px-6 rounded-xl shadow-[0_0_20px_rgba(255,255,255,0.3)] transition-all hover:scale-105 disabled:opacity-50 disabled:hover:scale-100",
+                      isGenerating && "opacity-80"
+                    )}
+                  >
+                    <div className="flex items-center justify-center gap-2 w-full">
+                      {isGenerating ? (
+                        <>
+                           <Loader2 className="w-5 h-5 animate-spin shrink-0" /> 
+                           <span>{t("ဖန်တီးနေပါသည်...", "Generating...")}</span>
+                           <span>{generationProgress}</span>
+                        </>
+                      ) : (
+                        <>
+                           <Play className="w-5 h-5 fill-current shrink-0" /> 
+                           <span>{t("အသံဖန်တီးမည်", "Generate Audio")}</span>
+                        </>
+                      )}
+                    </div>
+                  </button>
+
+                  {/* Cancel Button - Only shows while generating */}
+                  {isGenerating && (
+                    <button
+                      onClick={handleCancelGeneration}
+                      className="w-16 shrink-0 flex items-center justify-center bg-red-500/20 hover:bg-red-500/40 border border-red-500/50 text-red-100 rounded-xl transition-colors shadow-[0_0_10px_rgba(239,68,68,0.3)]"
+                      title={t("ရပ်တန့်မည်", "Cancel")}
+                    >
+                      <XCircle className="w-6 h-6" />
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* MAIN GENERATOR AUDIO PLAYER */}
+              {currentAudio && (
+                <div className="bg-black/70 border border-white/30 rounded-2xl p-6 shadow-[0_0_30px_rgba(255,255,255,0.2)] animate-fade-in-up relative overflow-hidden">
+                  <div className="absolute top-0 left-0 right-0 h-1 moving-gradient-bg shadow-[0_0_10px_rgba(255,255,255,0.8)]"></div>
+                  
+                  <div className="flex items-center justify-between mb-4 mt-2">
+                    <h3 className="text-sm font-bold text-white flex items-center gap-2 drop-shadow-[0_0_5px_rgba(255,255,255,0.5)]">
+                      <Volume2 className="w-4 h-4" /> {t("ဖန်တီးမှု ပြီးစီးပါပြီ", "Success")}
+                    </h3>
+                  </div>
+                  
+                  <div className="flex items-center gap-4 bg-white/10 rounded-xl p-3 border border-white/20">
+                    <button
+                      onClick={toggleMainPlay}
+                      className="w-12 h-12 flex-shrink-0 flex items-center justify-center rounded-full moving-gradient-bg text-white shadow-[0_0_15px_rgba(255,255,255,0.4)] hover:scale-105 transition-transform"
+                    >
+                      {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-1" />}
+                    </button>
+                    
+                    <audio 
+                      ref={audioRef} 
+                      src={currentAudio} 
+                      className="hidden" 
+                      onPlay={() => { setIsPlaying(true); pauseBackgroundMusic(); }}
+                      onPause={() => { setIsPlaying(false); resumeBackgroundMusic(); }}
+                      onEnded={() => { setIsPlaying(false); resumeBackgroundMusic(); }}
+                    />
+                    
+                    <div className="flex gap-2 ml-auto">
+                      <button onClick={() => handleDownloadSRT(currentAudio, currentFullText, 'recent')} className="bg-white/10 text-white p-2 rounded-lg border border-white/20 hover:bg-white/20" title="Download SRT"><Subtitles className="w-4 h-4" /></button>
+                      <button onClick={() => handleDownload(currentAudio, 'recent')} className="bg-white/10 text-white p-2 rounded-lg border border-white/20 hover:bg-white/20" title="Download Audio"><Download className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* --- HISTORY TAB (CLOUD + LOCAL HYBRID) --- */}
+        {activeTab === 'history' && (
+          <div className="max-w-4xl mx-auto space-y-6 animate-fade-in">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="text-2xl font-bold flex items-center gap-2 neon-text pb-1">
+                <BookOpen className="w-6 h-6 text-white drop-shadow-[0_0_8px_rgba(255,255,255,1)]" /> {t("မှတ်တမ်းများ", "History")}
+              </h2>
+            </div>
+            
+            <div className="bg-red-500/10 border border-red-500/20 p-4 rounded-xl mb-6 shadow-sm">
+               <p className="text-xs text-red-300 leading-relaxed font-medium">
+                 <span className="font-bold text-red-400 text-sm">⚠️ {t('အသိပေးချက်', 'Notice')} - </span> 
+                 {t('Cloud မှတ်တမ်းများကို ၃ ရက် (72 Hrs) ပြည့်လျှင် အလိုအလျောက် ရှင်းလင်းပေးမည်ဖြစ်ပါသည်။ File size 1MB ထက်ကြီးသော File များကို Local Storage ထဲတွင်သာ ယာယီသိမ်းဆည်းထားပါသဖြင့် App ထဲကထွက်လျှင် ယာယီသိမ်းဆည်းထားသော File များ ပျက်သွားပါမည်။ File တွေ မပျက်ခင် Download လုပ်ထားနိုင်ပါသည်။', 'Cloud history will be automatically cleared after 3 days (72 Hrs). Files larger than 1MB are temporarily saved in Local Storage, so they will be deleted when you exit or refresh the App. Please download your files before leaving.')}
+               </p>
+            </div>
+            
+            {history.length === 0 ? (
+              <div className="text-center py-20 bg-black/40 border border-white/10 rounded-2xl">
+                <Clock className="w-12 h-12 text-gray-600 mx-auto mb-4" />
+                <p className="text-gray-400">History Empty</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {history.map(item => {
+                  const isDeleting = deletingIds.includes(item.id);
+                  const isLocal = item.hasLocalAudio;
+                  const isHistoryPlaying = activeHistoryAudio?.id === item.id;
+
+                  return (
+                    <div 
+                      key={item.id} 
+                      className={classNames(
+                        "bg-black/60 border rounded-2xl p-5 flex flex-col md:flex-row md:items-start justify-between gap-4 transition-all duration-300 relative overflow-hidden group hover:shadow-[0_0_20px_rgba(255,255,255,0.2)]",
+                        isLocal ? "border-yellow-500/30 hover:border-yellow-400/50" : "border-blue-500/30 hover:border-blue-400/50",
+                        isDeleting ? "opacity-0 scale-95" : "opacity-100"
+                      )}
+                    >
+                      <div className={classNames("absolute left-0 top-0 bottom-0 w-1", isLocal ? "bg-gradient-to-b from-yellow-400 to-orange-500" : "bg-gradient-to-b from-blue-400 to-indigo-500")}></div>
+                      
+                      {/* Top Bar for Date & Countdown */}
+                      <div className="absolute top-3 right-4 flex flex-col items-end gap-1">
+                        <div className="text-[10px] text-gray-400 flex items-center gap-1 font-mono">
+                          <Clock className="w-3 h-3" /> {formatDateTime(item.timestamp)}
+                        </div>
+                        <div className="text-[10px] font-bold text-red-400 flex items-center gap-1 animate-pulse font-mono bg-red-900/30 px-2 py-0.5 rounded-md border border-red-500/20">
+                          <Timer className="w-3 h-3" /> {getCountdown(item.timestamp, nowTime, t)}
+                        </div>
+                      </div>
+
+                      {item.type === 'script' ? (
+                        <>
+                          <div className="flex-1 space-y-3 pl-2 mt-4 md:mt-0">
+                            <div className="flex items-center gap-2">
+                               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-white/30 text-white shadow-[0_0_5px_rgba(255,255,255,0.3)]">Script</span>
+                               <span className={classNames("text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1", isLocal ? "bg-yellow-500/20 text-yellow-300" : "bg-blue-500/20 text-blue-300")}>
+                                  <Cloud className="w-3 h-3"/> Cloud Sync
+                               </span>
+                            </div>
+                            <p className="text-gray-200 font-medium text-sm border-l-2 border-white/30 pl-3 line-clamp-3">"{item.translatedText}"</p>
+                          </div>
+                          <div className="flex items-end gap-2 shrink-0 md:pt-6">
+                            <button 
+                              onClick={() => {
+                                 copyToClipboard(item.translatedText, () => {
+                                    setCopiedScriptId(item.id);
+                                    setTimeout(() => setCopiedScriptId(null), 2000);
+                                 });
+                              }} 
+                              className="bg-white/10 hover:bg-white/20 text-white p-2.5 rounded-lg border border-white/20 transition-colors"
+                            >
+                              {copiedScriptId === item.id ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+                            </button>
+                            <button onClick={() => removeHistoryItem(item.id)} className="bg-red-500/20 hover:bg-red-600/40 text-red-300 p-2.5 rounded-lg border border-red-500/30 transition-colors"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex-1 space-y-2 pl-2 mt-4 md:mt-0">
+                            <div className="flex items-center gap-2">
+                               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full border border-white/30 text-white shadow-[0_0_5px_rgba(255,255,255,0.3)]">Audio</span>
+                               <span className={classNames("text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1", isLocal ? "bg-yellow-500/20 text-yellow-300" : "bg-blue-500/20 text-blue-300")}>
+                                  {isLocal ? <Smartphone className="w-3 h-3"/> : <Cloud className="w-3 h-3"/>}
+                                  {isLocal ? "Local Storage" : "Cloud Storage"}
+                               </span>
+                            </div>
+                            <p className="text-gray-200 text-sm italic border-l-2 border-white/30 pl-3 line-clamp-2">"{item.text}"</p>
+                            
+                            {/* Voice, Emotion & Speed Detailed Badges */}
+                            <div className="flex flex-wrap gap-2 text-[11px] text-gray-400 mt-2">
+                              <span className="flex items-center gap-1 bg-white/5 px-2 py-1 rounded-md border border-white/10"><Mic className="w-3 h-3 text-blue-400" /> {item.voice}</span>
+                              <span className="flex items-center gap-1 bg-white/5 px-2 py-1 rounded-md border border-white/10"><Activity className="w-3 h-3 text-red-400" /> {item.emotionEmoji} {item.emotionLabel?.mm || item.emotionLabel?.en}</span>
+                              {(item.speedLabel?.mm || item.speedLabel?.en) && (
+                                <span className="flex items-center gap-1 bg-white/5 px-2 py-1 rounded-md border border-white/10"><Gauge className="w-3 h-3 text-yellow-400" /> {item.speedEmoji || "▶️"} {item.speedLabel?.mm || item.speedLabel?.en}</span>
+                              )}
+                            </div>
+                          </div>
+                          <div className="flex items-end gap-2 shrink-0 flex-wrap justify-end md:pt-6">
+                            {(item.audioBase64 || item.hasLocalAudio) && (
+                                <>
+                                  <button onClick={() => toggleHistoryAudio(item)} className="bg-white/10 hover:bg-white/20 text-white p-2.5 rounded-lg border border-white/20 transition-colors" title={isHistoryPlaying ? "Pause" : "Play"}>
+                                    {isHistoryPlaying ? <Pause className="w-4 h-4 text-yellow-400" /> : <Play className="w-4 h-4" />}
+                                  </button>
+                                  
+                                  {isHistoryPlaying && activeHistoryAudio && (
+                                    <audio 
+                                      src={activeHistoryAudio.playableSrc} 
+                                      autoPlay 
+                                      onPlay={() => pauseBackgroundMusic()}
+                                      onPause={() => { resumeBackgroundMusic(); setActiveHistoryAudio(null); }}
+                                      onEnded={() => { setActiveHistoryAudio(null); resumeBackgroundMusic(); }}
+                                      className="hidden" 
+                                    />
+                                  )}
+
+                                  <button 
+                                     onClick={async () => {
+                                        let base64 = item.audioBase64;
+                                        if(!base64 && item.hasLocalAudio) base64 = await getLocalAudio(item.id);
+                                        if(base64) handleDownloadSRT(base64, item.fullText || item.text, item.id);
+                                     }} 
+                                     className="bg-white/10 hover:bg-white/20 text-white p-2.5 rounded-lg border border-white/20 transition-colors" title="Download SRT"
+                                  >
+                                     <Subtitles className="w-4 h-4" />
+                                  </button>
+                                  
+                                  <button 
+                                     onClick={async () => {
+                                        let base64 = item.audioBase64;
+                                        if(!base64 && item.hasLocalAudio) base64 = await getLocalAudio(item.id);
+                                        if(base64) handleDownload(base64, item.id);
+                                     }} 
+                                     className="bg-white/10 hover:bg-white/20 text-white p-2.5 rounded-lg border border-white/20 transition-colors" title="Download Audio"
+                                  >
+                                     <Download className="w-4 h-4" />
+                                  </button>
+                                </>
+                            )}
+                            <button onClick={() => removeHistoryItem(item.id)} className="bg-red-500/20 hover:bg-red-600/40 text-red-300 p-2.5 rounded-lg border border-red-500/30 transition-colors" title="Delete"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      <style dangerouslySetInnerHTML={{__html: `
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Myanmar:wght@400;500;700;900&display=swap');
+        
+        .font-mm { font-family: 'Pyidaungsu', 'Myanmar Text', 'Noto Sans Myanmar', sans-serif; }
+
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes fade-in-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .animate-fade-in { animation: fade-in 0.4s ease-out forwards; }
+        .animate-fade-in-up { animation: fade-in-up 0.4s ease-out forwards; }
+        
+        /* Neon Moving Gradient Keyframes */
+        @keyframes gradientBG {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+
+        /* Moving Marquee Keyframes (Left to Right) */
+        @keyframes scrollLtr {
+          0% { transform: translateX(-50%); }
+          100% { transform: translateX(0%); }
+        }
+
+        .marquee-ltr {
+          display: flex;
+          width: 200%;
+          animation: scrollLtr 25s linear infinite;
+        }
+        
+        .moving-gradient-bg {
+          background: linear-gradient(-45deg, #ff0055, #0066ff, #ffcc00, #ff0055);
+          background-size: 300% 300%;
+          animation: gradientBG 8s ease infinite;
+        }
+
+        .neon-text {
+          background: linear-gradient(-45deg, #ff3366, #33ccff, #ffcc00, #ff3366);
+          background-size: 300% 300%;
+          animation: gradientBG 8s ease infinite;
+          -webkit-background-clip: text;
+          -webkit-text-fill-color: transparent;
+          text-shadow: 0 0 10px rgba(255,255,255,0.2);
+          
+          /* Fix for Burmese text clipping */
+          line-height: 1.5 !important;
+          padding-top: 0.2em;
+          padding-bottom: 0.2em;
+        }
+
+        .neon-border::before {
+          content: "";
+          position: absolute;
+          inset: -2px;
+          border-radius: inherit;
+          background: linear-gradient(-45deg, #ff0055, #0066ff, #ffcc00);
+          background-size: 300% 300%;
+          animation: gradientBG 8s ease infinite;
+          z-index: -1;
+          opacity: 0.5;
+          filter: blur(8px);
+        }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.4); }
+        
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: rgba(0,0,0,0.3); }
+        ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.4); }
+      `}} />
+    </div>
+  );
+}
