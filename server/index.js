@@ -6,7 +6,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const root = path.join(__dirname, '..');
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '25mb' }));
 
 const ATHANLAB_BASE = 'https://api.athanlab.com/api/v1';
 const GEMINI_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -82,7 +82,14 @@ app.post('/api/voxcpm/generate', async (req, res) => {
       });
     }
 
-    const { text, pace } = req.body || {};
+    const {
+      text,
+      language = 'my',
+      reference_audio_base64,
+      prompt_text,
+      prompt_audio_base64,
+      inference_timesteps = 10
+    } = req.body || {};
 
     if (!text || !text.trim()) {
       return res.status(400).json({
@@ -90,43 +97,44 @@ app.post('/api/voxcpm/generate', async (req, res) => {
       });
     }
 
-    let stylePrefix = '(speaking slightly slower, natural pace)';
+    const payload = {
+      text: text.trim(),
+      language,
+      response_format: 'base64',
+      inference_timesteps
+    };
 
-    if (pace === 'slow') {
-      stylePrefix = '(speaking slower, natural pace)';
-    } else if (pace === 'fast') {
-      stylePrefix = '(speaking faster, natural pace)';
+    if (reference_audio_base64) {
+      payload.reference_audio_base64 = reference_audio_base64;
     }
 
-    const finalText = `${stylePrefix} ${text.trim()}`;
+    if (prompt_text) {
+      payload.prompt_text = prompt_text;
+    }
 
-    const response = await fetch(`${baseUrl}/generate`, {
+    if (prompt_audio_base64) {
+      payload.prompt_audio_base64 = prompt_audio_base64;
+    }
+
+    const response = await fetch(`${baseUrl}/v1/speech`, {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+        'Content-Type': 'application/json'
       },
-      body: new URLSearchParams({
-        text: finalText
-      })
+      body: JSON.stringify(payload)
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
+    const data = await response.json();
 
+    if (!response.ok) {
       return res.status(response.status).json({
-        error: errorText || `VoxCPM2 API Error ${response.status}`
+        error: data.detail || data.error || `VoxCPM2 API Error ${response.status}`
       });
     }
 
-    const audioBuffer = await response.arrayBuffer();
-
-    const audioBase64 = Buffer
-      .from(audioBuffer)
-      .toString('base64');
-
     return res.status(200).json({
-      audio: audioBase64,
-      sample_rate: 48000
+      audio: data.audio_base64,
+      sample_rate: data.sample_rate || 48000
     });
 
   } catch (error) {
@@ -137,7 +145,6 @@ app.post('/api/voxcpm/generate', async (req, res) => {
     });
   }
 });
-
 
 const dist = path.join(root,'dist');
 app.use(express.static(dist));
