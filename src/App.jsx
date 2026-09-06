@@ -859,7 +859,7 @@ export default function App() {
     console.log('🎙️ VoxCPM2 REQUEST START:', {
       textLength: chunkText?.length || 0,
       referenceBase64Length: cloneReferenceBase64?.length || 0,
-      inferenceTimesteps: 3
+      inferenceTimesteps: 5
     });
 
     const response = await fetch('/api/voxcpm/generate', {
@@ -871,7 +871,7 @@ export default function App() {
         text: chunkText,
         language: 'my',
         reference_audio_base64: cloneReferenceBase64,
-        inference_timesteps: 3
+        inference_timesteps: 5
       }),
       signal
     });
