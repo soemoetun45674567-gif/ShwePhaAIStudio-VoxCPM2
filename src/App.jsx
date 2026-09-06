@@ -854,6 +854,14 @@ export default function App() {
       throw new Error('Please upload a reference voice audio first.');
     }
 
+    const voxStartTime = performance.now();
+
+    console.log('🎙️ VoxCPM2 REQUEST START:', {
+      textLength: chunkText?.length || 0,
+      referenceBase64Length: cloneReferenceBase64?.length || 0,
+      inferenceTimesteps: 3
+    });
+
     const response = await fetch('/api/voxcpm/generate', {
       method: 'POST',
       headers: {
@@ -863,12 +871,26 @@ export default function App() {
         text: chunkText,
         language: 'my',
         reference_audio_base64: cloneReferenceBase64,
-        inference_timesteps: 10
+        inference_timesteps: 3
       }),
       signal
     });
 
+    const responseReceivedTime = performance.now();
+
+    console.log('🎙️ VoxCPM2 RESPONSE:', {
+      status: response.status,
+      responseTimeSeconds: ((responseReceivedTime - voxStartTime) / 1000).toFixed(2)
+    });
+
     const data = await response.json();
+
+    const jsonParsedTime = performance.now();
+
+    console.log('📦 VoxCPM2 JSON PARSED:', {
+      jsonParseTimeSeconds: ((jsonParsedTime - responseReceivedTime) / 1000).toFixed(2),
+      totalTimeSeconds: ((jsonParsedTime - voxStartTime) / 1000).toFixed(2)
+    });
 
     if (!response.ok) {
       throw new Error(
@@ -1043,7 +1065,7 @@ export default function App() {
             // Wait 1 second before sending the next chunk
             // to avoid 429 Too Many Requests.
             if (i < finalChunks.length - 1 && !cancelRef.current) {
-              await new Promise(res => setTimeout(res, 1000));
+              await new Promise(res => setTimeout(res, 0));
             }
           } else {
             throw new Error('No audio data returned.');
